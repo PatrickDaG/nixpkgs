@@ -1120,6 +1120,8 @@ in
           ${loadSecretEnvironment "domain"}
 
           echo "Running migrations"
+          export RUN_MANUAL_MIGRATIONS="true"
+          ${getExe cfg.domain.package} eval Domain.Release.migrate --migrations-path apps/domain/priv/repo/migrations --migrations-path apps/domain/priv/repo/manual_migrations
           ${getExe cfg.domain.package} eval Domain.Release.migrate
         '';
 

@@ -543,9 +543,9 @@ defmodule Provision do
           group_uuid = UuidMapping.get_entity(slug, "actor_groups", external_id)
 
           memberships =
-            Actors.Membership.Query.all()
-            |> Actors.Membership.Query.by_group_id(group_uuid)
-            |> Actors.Membership.Query.returning_all()
+            Membership.Query.all()
+            |> Membership.Query.by_group_id(group_uuid)
+            |> Membership.Query.returning_all()
             |> Repo.all()
 
           existing_members = Enum.map(memberships, fn membership -> membership.actor_id end)
@@ -563,7 +563,7 @@ defmodule Provision do
           Logger.info("Updating members for actor group #{external_id}")
           Enum.each(missing_members || [], fn actor_uuid ->
             Logger.info("Adding member #{external_id}")
-            Actors.Membership.Changeset.upsert(account.id, %Actors.Membership{}, %{
+            Membership.Changeset.upsert(account.id, %Membership{}, %{
               group_id: group_uuid,
               actor_id: actor_uuid
             })
@@ -574,7 +574,7 @@ defmodule Provision do
             # Remove untracked members
             to_delete = Enum.map(untracked_members, fn actor_uuid -> {group_uuid, actor_uuid} end)
             if to_delete != [] do
-              Actors.Membership.Query.by_group_id_and_actor_id({:in, to_delete})
+              Membership.Query.by_group_id_and_actor_id({:in, to_delete})
                 |> repo.delete_all()
             end
           end
