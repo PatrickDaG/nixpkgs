@@ -1,6 +1,7 @@
 defmodule Provision do
   alias Portal.{Repo, Account, Auth, Actor, Resource, Site, Group, Policy, Membership}
   alias Portal.EmailOTP.AuthProvider, as: EmailOTPAuthProvider
+  alias Portal.OIDC.AuthProvider, as: OIDCAuthProvider
   alias Portal.AuthProvider
   require Logger
   import Ecto.Query
@@ -11,6 +12,10 @@ defmodule Provision do
     |> Ecto.Changeset.cast(attrs, [:protocol, :ports])
     |> Ecto.Changeset.validate_required([:protocol])
   end
+
+  # Helper for conditionally adding keys to a map
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   # UUID Mapping handling
   defmodule UuidMapping do
@@ -416,24 +421,26 @@ defmodule Provision do
               Logger.info("Creating new actor #{actor_data["name"]}")
               actor_type = String.to_existing_atom(actor_data["type"])
               # service_account and api_client must NOT have email (constraint requirement)
-              # account_user and account_admin_user MUST have email
+              # account_user and account_admin_user MUST have email and can have password_hash
               actor_attrs = case actor_type do
                 type when type in [:service_account, :api_client] ->
                   %{account_id: account.id, type: type, name: actor_data["name"]}
                 _ ->
                   %{account_id: account.id, type: actor_type, name: actor_data["name"], email: actor_data["email"]}
+                  |> maybe_put(:password_hash, actor_data["passwordHash"])
               end
               actor = struct(Actor, actor_attrs) |> repo.insert!()
               UuidMapping.update_entities(slug, "actors", %{external_id => actor.id})
               {:ok, actor}
             existing_actor ->
               Logger.info("Updating existing actor #{actor_data["name"]}")
-              # Only set email for account_user and account_admin_user types
+              # Only set email and password_hash for account_user and account_admin_user types
               update_attrs = case existing_actor.type do
                 type when type in [:service_account, :api_client] ->
                   %{name: actor_data["name"]}
                 _ ->
                   %{name: actor_data["name"], email: actor_data["email"]}
+                  |> maybe_put(:password_hash, actor_data["passwordHash"])
               end
               updated_actor = existing_actor
                 |> Ecto.Changeset.change(update_attrs)
@@ -443,19 +450,67 @@ defmodule Provision do
         end)
       end)
 
-      # Provider management through JSON config is deprecated in the new Portal architecture
-      # Providers should be created through the web interface or via direct database operations
+      # Create or update auth providers
       multi = Enum.reduce(account_data["auth"] || %{}, multi, fn {external_id, provider_data}, multi ->
-        Ecto.Multi.run(multi, {:provider, slug, external_id}, fn _repo, changes ->
+        Ecto.Multi.run(multi, {:provider, slug, external_id}, fn repo, changes ->
           {_, account} = changes[{:account, slug}]
           uuid = UuidMapping.get_entity(slug, "providers", external_id)
-          case uuid && Repo.get_by(AuthProvider, account_id: account.id, id: uuid) do
-            nil ->
-              Logger.warning("Provider #{provider_data["name"]} not found. Provider creation through provision-state.json is no longer supported. Please create providers through the web interface.")
+          adapter_config = provider_data["adapter_config"] || %{}
+
+          case {provider_data["adapter"], uuid && Repo.get_by(AuthProvider, account_id: account.id, id: uuid)} do
+            {"oidc", nil} ->
+              Logger.info("Creating new OIDC provider #{provider_data["name"]}")
+              provider_id = Ecto.UUID.generate()
+
+              # Create base AuthProvider record
+              repo.insert!(%AuthProvider{
+                id: provider_id,
+                account_id: account.id,
+                type: :oidc
+              })
+
+              # Create OIDC-specific record
+              oidc_attrs = %{
+                id: provider_id,
+                account_id: account.id,
+                name: provider_data["name"],
+                issuer: adapter_config["issuer"],
+                client_id: adapter_config["clientId"],
+                client_secret: adapter_config["clientSecret"],
+                discovery_document_uri: adapter_config["discoveryDocumentUri"],
+                context: String.to_existing_atom(adapter_config["context"] || "clients_and_portal"),
+                is_verified: true
+              }
+              |> maybe_put(:client_session_lifetime_secs, adapter_config["clientSessionLifetimeSecs"])
+              |> maybe_put(:portal_session_lifetime_secs, adapter_config["portalSessionLifetimeSecs"])
+
+              oidc_provider = struct(OIDCAuthProvider, oidc_attrs) |> repo.insert!()
+              UuidMapping.update_entities(slug, "providers", %{external_id => provider_id})
+              {:ok, oidc_provider}
+
+            {"oidc", existing_base} ->
+              Logger.info("Updating existing OIDC provider #{provider_data["name"]}")
+              # Fetch and update the OIDC-specific record
+              oidc_provider = Repo.get!(OIDCAuthProvider, existing_base.id)
+              update_attrs = %{
+                name: provider_data["name"],
+                issuer: adapter_config["issuer"],
+                client_id: adapter_config["clientId"],
+                client_secret: adapter_config["clientSecret"],
+                discovery_document_uri: adapter_config["discoveryDocumentUri"],
+                context: String.to_existing_atom(adapter_config["context"] || "clients_and_portal")
+              }
+              |> maybe_put(:client_session_lifetime_secs, adapter_config["clientSessionLifetimeSecs"])
+              |> maybe_put(:portal_session_lifetime_secs, adapter_config["portalSessionLifetimeSecs"])
+
+              updated = oidc_provider
+                |> Ecto.Changeset.change(update_attrs)
+                |> repo.update!()
+              {:ok, updated}
+
+            {adapter, _} ->
+              Logger.warning("Unsupported auth adapter '#{adapter}' for provider #{provider_data["name"]}, skipping")
               {:ok, nil}
-            existing ->
-              Logger.info("Found existing provider #{external_id}")
-              {:ok, existing}
           end
         end)
       end)

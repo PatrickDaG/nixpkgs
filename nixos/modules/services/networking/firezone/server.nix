@@ -11,7 +11,6 @@ let
     concatLines
     concatLists
     concatMapAttrs
-    concatStringsSep
     filterAttrs
     filterAttrsRecursive
     flip
@@ -30,23 +29,12 @@ let
     mkRenamedOptionModule
     optionalAttrs
     optionalString
-    recursiveUpdate
     toUpper
     types
     ;
 
   cfg = config.services.firezone.server;
   jsonFormat = pkgs.formats.json { };
-  availableAuthAdapters = [
-    "email"
-    "openid_connect"
-    "userpass"
-    "token"
-    "google_workspace"
-    "microsoft_entra"
-    "okta"
-    "jumpcloud"
-  ];
 
   typePortRange =
     types.coercedTo types.port
@@ -121,11 +109,12 @@ let
         // {
           auth = flip mapAttrs account.auth (
             authName: auth:
-            recursiveUpdate auth (
-              optionalAttrs (auth.adapter_config.clientSecretFile != null) {
-                adapter_config.client_secret = "{env:AUTH_CLIENT_SECRET_${toUpper accountName}_${toUpper authName}}";
-              }
-            )
+            auth
+            // {
+              adapter_config = auth.adapter_config // optionalAttrs (auth.adapter_config.clientSecretFile != null) {
+                clientSecret = "{env:AUTH_CLIENT_SECRET_${toUpper accountName}_${toUpper authName}}";
+              };
+            }
           );
         }
       );
@@ -587,6 +576,20 @@ in
                           Must be null for service_account and api_client types.
                         '';
                       };
+
+                      passwordHash = mkOption {
+                        type = types.nullOr types.str;
+                        default = null;
+                        description = ''
+                          An Argon2 password hash for this actor. This enables the actor to
+                          log in via the userpass authentication provider using their email
+                          and password.
+
+                          Generate a hash using: `nix-shell -p libargon2 --run 'echo -n "your-password" | argon2 "$(head -c 16 /dev/urandom | base64)" -id -e'`
+
+                          Required for `account_admin_user` type actors to enable admin portal access.
+                        '';
+                      };
                     };
                   }
                 );
@@ -596,6 +599,7 @@ in
                     type = "account_admin_user";
                     name = "Admin";
                     email = "admin@myorg.example.com";
+                    passwordHash = "$argon2id$v=19$m=65536,t=3,p=4$...";
                   };
                 };
                 description = ''
@@ -608,24 +612,44 @@ in
               auth = mkOption {
                 type = types.attrsOf (
                   types.submodule {
-                    freeformType = jsonFormat.type;
                     options = {
                       name = mkOption {
                         type = types.str;
-                        description = "The name of this authentication provider";
+                        description = "The name of this authentication provider.";
                       };
 
                       adapter = mkOption {
-                        type = types.enum availableAuthAdapters;
-                        description = "The auth adapter type";
+                        type = types.enum [ "oidc" ];
+                        description = ''
+                          The auth adapter type. Currently only 'oidc' is supported
+                          for provisioning. Specialized providers (Google, Entra,
+                          Okta) should be configured through the web UI.
+                        '';
                       };
 
-                      adapter_config.clientSecretFile = mkOption {
-                        type = types.nullOr types.path;
-                        default = null;
+                      adapter_config = mkOption {
+                        type = types.submodule {
+                          freeformType = jsonFormat.type;
+                          options = {
+                            clientSecretFile = mkOption {
+                              type = types.nullOr types.path;
+                              default = null;
+                              description = ''
+                                File containing the client secret. Required for OIDC adapters.
+                              '';
+                            };
+                          };
+                        };
+                        default = { };
                         description = ''
-                          A file containing a the client secret for an openid_connect adapter.
-                          You only need to set this if this is an openid_connect provider.
+                          Adapter-specific configuration. For OIDC adapters, this should include:
+                          - `issuer`: The OIDC issuer URL
+                          - `clientId`: The OIDC client ID
+                          - `clientSecretFile`: File containing the OIDC client secret
+                          - `discoveryDocumentUri`: The OIDC discovery document URI
+                          - `context`: Where this provider can be used ("clients_and_portal", "clients_only", "portal_only")
+                          - `clientSessionLifetimeSecs`: Client session lifetime in seconds (optional)
+                          - `portalSessionLifetimeSecs`: Portal session lifetime in seconds (optional)
                         '';
                       };
                     };
@@ -634,13 +658,13 @@ in
                 default = { };
                 example = {
                   myoidcprovider = {
-                    adapter = "openid_connect";
+                    name = "My OIDC Provider";
+                    adapter = "oidc";
                     adapter_config = {
-                      client_id = "clientid";
+                      issuer = "https://auth.example.com";
+                      clientId = "my-client-id";
                       clientSecretFile = "/run/secrets/oidc-client-secret";
-                      response_type = "code";
-                      scope = "openid email name";
-                      discovery_document_uri = "https://auth.example.com/.well-known/openid-configuration";
+                      discoveryDocumentUri = "https://auth.example.com/.well-known/openid-configuration";
                     };
                   };
                 };
@@ -902,6 +926,12 @@ in
               message = "An account name must contain only lowercase characters and underscores, as it will be used as the URL slug for this account.";
             }
           ]
+          ++ flip mapAttrsToList accountCfg.actors (
+            actorName: actorCfg: {
+              assertion = actorCfg.type != "account_admin_user" || actorCfg.passwordHash != null;
+              message = "Actor '${actorName}' in account '${accountName}' is an admin but has no passwordHash set. Admin actors require a passwordHash for portal login.";
+            }
+          )
           ++ flip mapAttrsToList accountCfg.auth (
             authName: _: {
               assertion = (builtins.match "^[[:alnum:]_-]+$" authName) != null;
@@ -988,8 +1018,6 @@ in
         # (default) maximum of 100 connections for postgresql on a 12 core +SMT
         # machine. 16 connections will be sufficient for small to medium deployments
         DATABASE_POOL_SIZE = "16";
-
-        AUTH_PROVIDER_ADAPTERS = mkDefault (concatStringsSep "," availableAuthAdapters);
 
         # Feature flags
         FEATURE_POLICY_CONDITIONS_ENABLED = mkDefault true;

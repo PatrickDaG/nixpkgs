@@ -94,6 +94,8 @@ in
                   type = "account_admin_user";
                   name = "Admin";
                   email = "admin@localhost.localdomain";
+                  # Hash for "testpassword" - generated with argon2
+                  passwordHash = "$argon2id$v=19$m=65536,t=3,p=4$ZnJvbW5peHBrZ3N0ZXN0$LZ3FT4vmNR2eH5dERJMgLo7HLQbZ3lbDcPvPjAK2W6U";
                 };
                 client = {
                   type = "service_account";
@@ -166,6 +168,7 @@ in
                   type = "account_admin_user";
                   name = "Admin (changed)";
                   email = "admin@localhost.localdomain";
+                  passwordHash = "$argon2id$v=19$m=65536,t=3,p=4$ZnJvbW5peHBrZ3N0ZXN0$LZ3FT4vmNR2eH5dERJMgLo7HLQbZ3lbDcPvPjAK2W6U";
                 };
                 client = {
                   type = "service_account";
@@ -231,6 +234,7 @@ in
                   type = "account_admin_user";
                   name = "Admin (changed)";
                   email = "admin@localhost.localdomain";
+                  passwordHash = "$argon2id$v=19$m=65536,t=3,p=4$ZnJvbW5peHBrZ3N0ZXN0$LZ3FT4vmNR2eH5dERJMgLo7HLQbZ3lbDcPvPjAK2W6U";
                 };
                 client = {
                   type = "service_account";
@@ -459,8 +463,8 @@ in
 
       with subtest("Start server"):
           server.wait_for_unit("firezone-server.service")
-          server.wait_until_succeeds("curl -Lsf https://${domain} | grep 'Welcome to Firezone'")
-          server.wait_until_succeeds("curl -Ls https://${domain}/api | grep 'Not Found'")
+          server.wait_until_succeeds("curl -Lsf https://${domain} | grep 'Welcome to Firezone'", timeout=60)
+          server.wait_until_succeeds("curl -Ls https://${domain}/api | grep 'Not Found'", timeout=30)
 
           # Wait for tokens and copy them to shared folder
           server.wait_for_file("/var/lib/private/firezone/relay_token.txt")
@@ -491,15 +495,15 @@ in
 
       with subtest("Check DNS based access"):
           # Check that we can access the resource through the VPN via DNS
-          client.wait_until_succeeds("curl -4 -Lsf http://resource.example.com | grep 'greetings from the resource'")
+          client.wait_until_succeeds("curl -4 -Lsf http://resource.example.com | grep 'greetings from the resource'", timeout=30)
 
       with subtest("Check CIDR based access"):
           # Check that we can access the resource through the VPN via CIDR
-          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.1.1")
+          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.1.1", timeout=30)
 
       with subtest("Check IP based access"):
           # Check that we can access the resource through the VPN via IP
-          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.2.1")
+          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.2.1", timeout=30)
 
       with subtest("Test Provisioning - changeAttributes"):
           # Stop services before switching configuration
@@ -512,7 +516,7 @@ in
           server.wait_for_unit("firezone-server.service")
 
           # Verify portal is still accessible
-          server.wait_until_succeeds("curl -Lsf https://${domain} | grep 'Welcome to Firezone'")
+          server.wait_until_succeeds("curl -Lsf https://${domain} | grep 'Welcome to Firezone'", timeout=60)
 
           # Restart services to pick up new configuration
           relay.succeed("systemctl start firezone-relay")
@@ -532,12 +536,12 @@ in
           gateway.wait_until_succeeds("journalctl --since -2m --unit firezone-gateway.service --grep 'Set up DNS resource NAT.*resource.example.com'", timeout=30)
 
           # Test changed filters: res1 now only allows ICMP (no HTTP)
-          client.wait_until_succeeds("ping -4 -c1 -W1 resource.example.com")
+          client.wait_until_succeeds("ping -4 -c1 -W1 resource.example.com", timeout=30)
           client.fail("curl -4 -Lsf --max-time 5 http://resource.example.com")
 
           # Other resources should still work
-          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.1.1")
-          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.2.1")
+          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.1.1", timeout=30)
+          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.2.1", timeout=30)
 
       with subtest("Test Provisioning - removeResource"):
           # Stop services before switching configuration
@@ -550,7 +554,7 @@ in
           server.wait_for_unit("firezone-server.service")
 
           # Verify portal is still accessible
-          server.wait_until_succeeds("curl -Lsf https://${domain} | grep 'Welcome to Firezone'")
+          server.wait_until_succeeds("curl -Lsf https://${domain} | grep 'Welcome to Firezone'", timeout=60)
 
           # Restart services to pick up new configuration
           relay.succeed("systemctl start firezone-relay")
@@ -569,7 +573,7 @@ in
           client.wait_until_fails("ping -4 -c3 -W1 resource.example.com", timeout=30)
 
           # res2 and res3 should still work
-          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.1.1")
-          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.2.1")
+          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.1.1", timeout=30)
+          client.wait_until_succeeds("ping -4 -c1 -W1 172.20.2.1", timeout=30)
     '';
 }
