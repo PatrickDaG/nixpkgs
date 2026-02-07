@@ -2,6 +2,7 @@
   lib,
   pkgs,
   config,
+  utils,
   ...
 }:
 let
@@ -58,6 +59,9 @@ let
         }
       );
 
+  #TODO: genjqreplacement secrets
+  #TODO: rebar3_ex_doc
+
   # All non-secret environment variables for the portal
   portalEnvironment = mapAttrs (_: v: if isBool v then boolToString v else toString v) cfg.settings;
 
@@ -100,29 +104,9 @@ let
       )
     );
 
-  provisionStateJson =
-    let
-      # Convert clientSecretFile options into the real counterpart
-      augmentedAccounts = flip mapAttrs cfg.provision.accounts (
-        accountName: account:
-        account
-        // {
-          auth = flip mapAttrs account.auth (
-            authName: auth:
-            auth
-            // {
-              adapter_config = auth.adapter_config // optionalAttrs (auth.adapter_config.clientSecretFile != null) {
-                clientSecret = "{env:AUTH_CLIENT_SECRET_${toUpper accountName}_${toUpper authName}}";
-              };
-            }
-          );
-        }
-      );
-    in
-    jsonFormat.generate "provision-state.json" {
-      # Do not include any clientSecretFile attributes in the resulting json
-      accounts = filterAttrsRecursive (k: _: k != "clientSecretFile") augmentedAccounts;
-    };
+  secretsReplacement = utils.genJqSecretsReplacement {
+    loadCredential = true;
+  } cfg.provision "/run/firezone/provision.json";
 
   commonServiceConfig = {
     AmbientCapabilities = [ ];
@@ -161,6 +145,7 @@ let
 
     StateDirectory = "firezone";
     WorkingDirectory = "/var/lib/firezone";
+    RuntimeDirectory = "firezone";
 
     LoadCredential = mapAttrsToList (secretName: secretFile: "${secretName}:${secretFile}") (
       filterAttrs (_: v: v != null) cfg.settingsSecret
@@ -630,22 +615,13 @@ in
                       adapter_config = mkOption {
                         type = types.submodule {
                           freeformType = jsonFormat.type;
-                          options = {
-                            clientSecretFile = mkOption {
-                              type = types.nullOr types.path;
-                              default = null;
-                              description = ''
-                                File containing the client secret. Required for OIDC adapters.
-                              '';
-                            };
-                          };
                         };
                         default = { };
                         description = ''
                           Adapter-specific configuration. For OIDC adapters, this should include:
                           - `issuer`: The OIDC issuer URL
                           - `clientId`: The OIDC client ID
-                          - `clientSecretFile`: File containing the OIDC client secret
+                          - `clientSecret`: File containing the OIDC client secret
                           - `discoveryDocumentUri`: The OIDC discovery document URI
                           - `context`: Where this provider can be used ("clients_and_portal", "clients_only", "portal_only")
                           - `clientSessionLifetimeSecs`: Client session lifetime in seconds (optional)
@@ -663,7 +639,7 @@ in
                     adapter_config = {
                       issuer = "https://auth.example.com";
                       clientId = "my-client-id";
-                      clientSecretFile = "/run/secrets/oidc-client-secret";
+                      clientSecret = "very-secure-secret";
                       discoveryDocumentUri = "https://auth.example.com/.well-known/openid-configuration";
                     };
                   };
@@ -1117,12 +1093,14 @@ in
           sleep 1
 
           ${loadPortalSecretEnvironment}
-          ln -sTf ${provisionStateJson} provision-state.json
+          ${secretsReplacement.script}
           ${getExe cfg.package} rpc 'Code.eval_file("${./provision.exs}")'
         '';
 
         environment = portalEnvironment;
-        serviceConfig = commonServiceConfig;
+        serviceConfig = commonServiceConfig // {
+          LoadCredential = secretsReplacement.credentials ++ commonServiceConfig.LoadCredential;
+        };
       };
     })
   ];

@@ -265,7 +265,7 @@ defmodule Provision do
     Logger.info("Starting provisioning")
 
     # Load desired state
-    json_file = "provision-state.json"
+    json_file = "/run/firezone/provision.json"
     {:ok, raw_json} = File.read(json_file)
     {:ok, %{"accounts" => accounts}} = Jason.decode(raw_json)
     accounts = resolve_references(accounts)
