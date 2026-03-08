@@ -220,9 +220,13 @@ defmodule Provision do
   end
 
   defp collect_current_entities(account_data) do
+    # Collect all OIDC provider keys from auth.oidc
+    auth_data = account_data["auth"] || %{}
+    oidc_providers = Map.keys(auth_data["oidc"] || %{})
+
     %{
       "actors" => Map.keys(account_data["actors"] || %{}),
-      "providers" => Map.keys(account_data["auth"] || %{}),
+      "providers" => oidc_providers,
       "sites" => Map.keys(account_data["gatewayGroups"] || %{}),  # JSON key is still "gatewayGroups"
       # relay_groups removed - no longer tracked
       "groups" => Map.keys(account_data["groups"] || %{}) ++ ["everyone"],  # Renamed from actor_groups
@@ -450,15 +454,17 @@ defmodule Provision do
         end)
       end)
 
-      # Create or update auth providers
-      multi = Enum.reduce(account_data["auth"] || %{}, multi, fn {external_id, provider_data}, multi ->
+      # Create or update auth providers (OIDC)
+      auth_data = account_data["auth"] || %{}
+      oidc_providers = auth_data["oidc"] || %{}
+
+      multi = Enum.reduce(oidc_providers, multi, fn {external_id, provider_data}, multi ->
         Ecto.Multi.run(multi, {:provider, slug, external_id}, fn repo, changes ->
           {_, account} = changes[{:account, slug}]
           uuid = UuidMapping.get_entity(slug, "providers", external_id)
-          adapter_config = provider_data["adapter_config"] || %{}
 
-          case {provider_data["adapter"], uuid && Repo.get_by(AuthProvider, account_id: account.id, id: uuid)} do
-            {"oidc", nil} ->
+          case uuid && Repo.get_by(AuthProvider, account_id: account.id, id: uuid) do
+            nil ->
               Logger.info("Creating new OIDC provider #{provider_data["name"]}")
               provider_id = Ecto.UUID.generate()
 
@@ -474,43 +480,39 @@ defmodule Provision do
                 id: provider_id,
                 account_id: account.id,
                 name: provider_data["name"],
-                issuer: adapter_config["issuer"],
-                client_id: adapter_config["client_id"],
-                client_secret: adapter_config["client_secret"],
-                discovery_document_uri: adapter_config["discovery_document_uri"],
-                context: String.to_existing_atom(adapter_config["context"] || "clients_and_portal"),
+                issuer: provider_data["issuer"],
+                client_id: provider_data["client_id"],
+                client_secret: provider_data["client_secret"],
+                discovery_document_uri: provider_data["discovery_document_uri"],
+                context: String.to_existing_atom(provider_data["context"] || "clients_and_portal"),
                 is_verified: true
               }
-              |> maybe_put(:client_session_lifetime_secs, adapter_config["client_session_lifetime_secs"])
-              |> maybe_put(:portal_session_lifetime_secs, adapter_config["portal_session_lifetime_secs"])
+              |> maybe_put(:client_session_lifetime_secs, provider_data["client_session_lifetime_secs"])
+              |> maybe_put(:portal_session_lifetime_secs, provider_data["portal_session_lifetime_secs"])
 
               oidc_provider = struct(OIDCAuthProvider, oidc_attrs) |> repo.insert!()
               UuidMapping.update_entities(slug, "providers", %{external_id => provider_id})
               {:ok, oidc_provider}
 
-            {"oidc", existing_base} ->
+            existing_base ->
               Logger.info("Updating existing OIDC provider #{provider_data["name"]}")
               # Fetch and update the OIDC-specific record
               oidc_provider = Repo.get!(OIDCAuthProvider, existing_base.id)
               update_attrs = %{
                 name: provider_data["name"],
-                issuer: adapter_config["issuer"],
-                client_id: adapter_config["client_id"],
-                client_secret: adapter_config["client_secret"],
-                discovery_document_uri: adapter_config["discovery_document_uri"],
-                context: String.to_existing_atom(adapter_config["context"] || "clients_and_portal")
+                issuer: provider_data["issuer"],
+                client_id: provider_data["client_id"],
+                client_secret: provider_data["client_secret"],
+                discovery_document_uri: provider_data["discovery_document_uri"],
+                context: String.to_existing_atom(provider_data["context"] || "clients_and_portal")
               }
-              |> maybe_put(:client_session_lifetime_secs, adapter_config["client_session_lifetime_secs"])
-              |> maybe_put(:portal_session_lifetime_secs, adapter_config["portal_session_lifetime_secs"])
+              |> maybe_put(:client_session_lifetime_secs, provider_data["client_session_lifetime_secs"])
+              |> maybe_put(:portal_session_lifetime_secs, provider_data["portal_session_lifetime_secs"])
 
               updated = oidc_provider
                 |> Ecto.Changeset.change(update_attrs)
                 |> repo.update!()
               {:ok, updated}
-
-            {adapter, _} ->
-              Logger.warning("Unsupported auth adapter '#{adapter}' for provider #{provider_data["name"]}, skipping")
-              {:ok, nil}
           end
         end)
       end)

@@ -1238,6 +1238,21 @@
   "module-services-firefox-syncserver-configuration": [
     "index.html#module-services-firefox-syncserver-configuration"
   ],
+  "module-services-firezone-server": [
+    "index.html#module-services-firezone-server"
+  ],
+  "module-services-firezone-server-token-generation": [
+    "index.html#module-services-firezone-server-token-generation"
+  ],
+  "module-services-firezone-server-token-generation-usage": [
+    "index.html#module-services-firezone-server-token-generation-usage"
+  ],
+  "module-services-firezone-server-token-generation-how-it-works": [
+    "index.html#module-services-firezone-server-token-generation-how-it-works"
+  ],
+  "module-services-firezone-server-token-generation-deployment": [
+    "index.html#module-services-firezone-server-token-generation-deployment"
+  ],
   "module-services-networking-dnsmasq": [
     "index.html#module-services-networking-dnsmasq"
   ],

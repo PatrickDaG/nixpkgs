@@ -7,11 +7,14 @@
 }:
 let
   inherit (lib)
+    all
     attrNames
     boolToString
     concatLines
     concatLists
+    elem
     filterAttrs
+    flatten
     flip
     forEach
     getExe
@@ -147,6 +150,84 @@ let
     Restart = "on-failure";
     RestartSec = 10;
   };
+
+  # Token generation script for relays, gateways, and clients
+  tokenGenerationScript = pkgs.writeShellScriptBin "firezone-generate-token" ''
+    set -euo pipefail
+
+    usage() {
+      echo "Usage: firezone-generate-token <type> [options]"
+      echo ""
+      echo "Generate authentication tokens for Firezone components."
+      echo ""
+      echo "Types:"
+      echo "  relay                    Generate a relay token (global, not account-specific)"
+      echo "  gateway <account> <site> Generate a gateway token for the given account and site"
+      echo "  client <account> <actor> Generate a client token for the given account and actor"
+      echo ""
+      echo "Examples:"
+      echo "  firezone-generate-token relay"
+      echo "  firezone-generate-token gateway main my-site"
+      echo "  firezone-generate-token client main my-service-account"
+      echo ""
+      echo "Note: This script must be run on the Firezone server host."
+      exit 1
+    }
+
+    [[ $# -lt 1 ]] && usage
+
+    TYPE="$1"
+    shift
+
+    case "$TYPE" in
+      relay)
+        ${getExe cfg.package} rpc '
+          {:ok, token} = Portal.Authentication.create_relay_token()
+          IO.puts(Portal.Authentication.encode_fragment!(token))
+        '
+        ;;
+      gateway)
+        [[ $# -lt 2 ]] && { echo "Error: gateway requires <account> and <site> arguments"; usage; }
+        ACCOUNT="$1"
+        SITE="$2"
+        ${getExe cfg.package} rpc "
+          account = Portal.Repo.get_by!(Portal.Account, slug: \"$ACCOUNT\")
+          site = Portal.Repo.get_by!(Portal.Site, account_id: account.id, name: \"$SITE\")
+          subject = %Portal.Auth.Subject{
+            account: account,
+            actor: %Portal.Actor{id: Ecto.UUID.generate(), type: :account_admin_user},
+            credential: %Portal.Auth.Credential{type: :portal_session, id: Ecto.UUID.generate()},
+            expires_at: DateTime.utc_now() |> DateTime.add(1, :hour),
+            context: %Portal.Auth.Context{type: :portal, remote_ip: {127,0,0,1}, user_agent: \"firezone-generate-token\"}
+          }
+          {:ok, token} = Portal.Authentication.create_gateway_token(site, subject)
+          IO.puts(Portal.Authentication.encode_fragment!(token))
+        "
+        ;;
+      client)
+        [[ $# -lt 2 ]] && { echo "Error: client requires <account> and <actor> arguments"; usage; }
+        ACCOUNT="$1"
+        ACTOR="$2"
+        ${getExe cfg.package} rpc "
+          account = Portal.Repo.get_by!(Portal.Account, slug: \"$ACCOUNT\")
+          actor = Portal.Repo.get_by!(Portal.Actor, account_id: account.id, name: \"$ACTOR\")
+          subject = %Portal.Auth.Subject{
+            account: account,
+            actor: %Portal.Actor{id: Ecto.UUID.generate(), type: :account_admin_user},
+            credential: %Portal.Auth.Credential{type: :portal_session, id: Ecto.UUID.generate()},
+            expires_at: DateTime.utc_now() |> DateTime.add(1, :hour),
+            context: %Portal.Auth.Context{type: :portal, remote_ip: {127,0,0,1}, user_agent: \"firezone-generate-token\"}
+          }
+          {:ok, token} = Portal.Authentication.create_client_token(actor, subject)
+          IO.puts(Portal.Authentication.encode_fragment!(token))
+        "
+        ;;
+      *)
+        echo "Error: Unknown token type '$TYPE'"
+        usage
+        ;;
+    esac
+  '';
 
 in
 {
@@ -587,61 +668,99 @@ in
                 '';
               };
 
-              auth = mkOption {
-                type = types.attrsOf (
-                  types.submodule {
-                    options = {
-                      name = mkOption {
-                        type = types.str;
-                        description = "The name of this authentication provider.";
-                      };
-
-                      adapter = mkOption {
-                        type = types.enum [ "oidc" ];
-                        description = ''
-                          The auth adapter type. Currently only 'oidc' is supported
-                          for provisioning. Specialized providers (Google, Entra,
-                          Okta) should be configured through the web UI.
-                        '';
-                      };
-
-                      adapter_config = mkOption {
-                        type = types.submodule {
-                          freeformType = jsonFormat.type;
+              auth = {
+                oidc = mkOption {
+                  type = types.attrsOf (
+                    types.submodule {
+                      options = {
+                        name = mkOption {
+                          type = types.str;
+                          description = "The display name of this OIDC authentication provider.";
                         };
-                        default = { };
-                        description = ''
-                          Adapter-specific configuration. For OIDC adapters, this should include:
-                          - `issuer`: The OIDC issuer URL
-                          - `client_id`: The OIDC client ID
-                          - `client_secret`: File containing the OIDC client secret
-                          - `discovery_document_uri`: The OIDC discovery document URI
-                          - `context`: Where this provider can be used ("clients_and_portal", "clients_only", "portal_only")
-                          - `client_session_lifetime_secs`: Client session lifetime in seconds (optional)
-                          - `portal_session_lifetime_secs`: Portal session lifetime in seconds (optional)
-                        '';
+
+                        issuer = mkOption {
+                          type = types.str;
+                          example = "https://auth.example.com";
+                          description = "The OIDC issuer URL.";
+                        };
+
+                        client_id = mkOption {
+                          type = types.str;
+                          description = "The OIDC client ID.";
+                        };
+
+                        client_secret = mkOption {
+                          type = types.either types.str types.path;
+                          description = ''
+                            The OIDC client secret. Can be a literal string or a path
+                            to a file using the `{file:/path/to/secret}` syntax for
+                            runtime secret loading.
+                          '';
+                        };
+
+                        discovery_document_uri = mkOption {
+                          type = types.str;
+                          example = "https://auth.example.com/.well-known/openid-configuration";
+                          description = "The OIDC discovery document URI.";
+                        };
+
+                        context = mkOption {
+                          type = types.enum [
+                            "clients_and_portal"
+                            "clients_only"
+                            "portal_only"
+                          ];
+                          default = "clients_and_portal";
+                          description = ''
+                            Where this authentication provider can be used:
+                            - `clients_and_portal`: Both VPN clients and the admin portal
+                            - `clients_only`: Only for VPN client authentication
+                            - `portal_only`: Only for admin portal authentication
+                          '';
+                        };
+
+                        client_session_lifetime_secs = mkOption {
+                          type = types.nullOr types.ints.positive;
+                          default = null;
+                          description = ''
+                            Client session lifetime in seconds. If null, uses the
+                            Firezone default. Must be a positive integer between
+                            1 and 2147483647 (approximately 68 years).
+                          '';
+                        };
+
+                        portal_session_lifetime_secs = mkOption {
+                          type = types.nullOr types.ints.positive;
+                          default = null;
+                          description = ''
+                            Portal session lifetime in seconds. If null, uses the
+                            Firezone default. Must be a positive integer between
+                            1 and 2147483647 (approximately 68 years).
+                          '';
+                        };
                       };
-                    };
-                  }
-                );
-                default = { };
-                example = {
-                  myoidcprovider = {
-                    name = "My OIDC Provider";
-                    adapter = "oidc";
-                    adapter_config = {
+                    }
+                  );
+                  default = { };
+                  example = {
+                    myProvider = {
+                      name = "My OIDC Provider";
                       issuer = "https://auth.example.com";
                       client_id = "my-client-id";
-                      client_secret = "very-secure-secret";
+                      client_secret = "{file:/run/secrets/oidc-secret}";
                       discovery_document_uri = "https://auth.example.com/.well-known/openid-configuration";
                     };
                   };
+                  description = ''
+                    OIDC authentication providers to provision. The attribute name
+                    will be used to track the provider across configuration changes
+                    but has no significance for Firezone itself.
+                  '';
                 };
-                description = ''
-                  All authentication providers to provision. The attribute name
-                  will only be used to track the provider and does not have any
-                  significance for Firezone.
-                '';
+
+                # Future: Add okta, entra submodules here with their specific options
+                # okta = mkOption { ... };
+                # entra = mkOption { ... };
               };
 
               resources = mkOption {
@@ -889,6 +1008,12 @@ in
       assertions = concatLists (
         flip mapAttrsToList cfg.provision.accounts (
           accountName: accountCfg:
+          let
+            validResources = attrNames accountCfg.resources;
+            validGroups = attrNames accountCfg.groups ++ [ "everyone" ];
+            validGatewayGroups = attrNames accountCfg.gatewayGroups;
+            validActors = attrNames accountCfg.actors;
+          in
           [
             {
               assertion = (builtins.match "^[[:lower:]_-]+$" accountName) != null;
@@ -901,10 +1026,37 @@ in
               message = "Actor '${actorName}' in account '${accountName}' is an admin but has no passwordHash set. Admin actors require a passwordHash for portal login.";
             }
           )
-          ++ flip mapAttrsToList accountCfg.auth (
+          ++ flip mapAttrsToList accountCfg.auth.oidc (
             authName: _: {
               assertion = (builtins.match "^[[:alnum:]_-]+$" authName) != null;
-              message = "The authentication provider attribute key must contain only letters, numbers, underscores or dashes.";
+              message = "The OIDC authentication provider attribute key '${authName}' must contain only letters, numbers, underscores or dashes.";
+            }
+          )
+          # Policy resource/group validation
+          ++ flatten (flip mapAttrsToList accountCfg.policies (
+            policyName: policyCfg: [
+              {
+                assertion = elem policyCfg.resource validResources;
+                message = "Policy '${policyName}' in account '${accountName}' references non-existent resource '${policyCfg.resource}'. Valid resources: ${builtins.concatStringsSep ", " validResources}";
+              }
+              {
+                assertion = elem policyCfg.group validGroups;
+                message = "Policy '${policyName}' in account '${accountName}' references non-existent group '${policyCfg.group}'. Valid groups: ${builtins.concatStringsSep ", " validGroups}";
+              }
+            ]
+          ))
+          # Resource gatewayGroups validation
+          ++ flip mapAttrsToList accountCfg.resources (
+            resourceName: resourceCfg: {
+              assertion = all (gg: elem gg validGatewayGroups) resourceCfg.gatewayGroups;
+              message = "Resource '${resourceName}' in account '${accountName}' references non-existent gateway group(s). Valid gateway groups: ${builtins.concatStringsSep ", " validGatewayGroups}";
+            }
+          )
+          # Group members validation
+          ++ flip mapAttrsToList accountCfg.groups (
+            groupName: groupCfg: {
+              assertion = all (m: elem m validActors) groupCfg.members;
+              message = "Group '${groupName}' in account '${accountName}' references non-existent actor(s). Valid actors: ${builtins.concatStringsSep ", " validActors}";
             }
           )
         )
@@ -1054,7 +1206,10 @@ in
           exec ${getExe cfg.package} start;
         '';
 
-        path = [ pkgs.curl ];
+        path = [
+          pkgs.curl
+          tokenGenerationScript
+        ];
         postStart = ''
           # Wait for the firezone server to come online
           count=0
@@ -1082,9 +1237,13 @@ in
           LoadCredential = secretsReplacement.credentials ++ commonServiceConfig.LoadCredential;
         };
       };
+
+      # Make the token generation script available system-wide
+      environment.systemPackages = [ tokenGenerationScript ];
     })
   ];
 
+  meta.doc = ./firezone-server.md;
   meta.maintainers = with lib.maintainers; [
     oddlama
     patrickdag

@@ -276,8 +276,18 @@ in
           };
         };
 
+        # Generate tokens using the firezone-generate-token script after server starts
         systemd.services.firezone-server.postStart = lib.mkAfter ''
-          ${lib.getExe config.services.firezone.server.package} rpc 'Code.eval_file("${./create-tokens.exs}")'
+          echo "Generating relay token..."
+          firezone-generate-token relay > relay_token.txt
+
+          echo "Generating gateway token..."
+          firezone-generate-token gateway main Site > gateway_token.txt
+
+          echo "Generating client token..."
+          firezone-generate-token client main "A client" > client_token.txt
+
+          echo "Token generation complete"
         '';
       };
 
