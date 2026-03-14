@@ -1,5 +1,5 @@
 defmodule Provision do
-  alias Portal.{Repo, Account, Auth, Actor, Resource, Site, Group, Policy, Membership}
+  alias Portal.{Repo, Account, Authentication, Actor, Resource, Site, Group, Policy, Membership}
   alias Portal.EmailOTP.AuthProvider, as: EmailOTPAuthProvider
   alias Portal.OIDC.AuthProvider, as: OIDCAuthProvider
   alias Portal.AuthProvider
@@ -245,12 +245,12 @@ defmodule Provision do
     } |> Repo.insert!()
 
     # Create synthetic subject without persisted token
-    temp_admin_subject = %Auth.Subject{
+    temp_admin_subject = %Authentication.Subject{
       account: account,
       actor: temp_admin_actor,
-      credential: %Auth.Credential{type: :portal_session, id: Ecto.UUID.generate()},
+      credential: %Authentication.Credential{type: :portal_session, id: Ecto.UUID.generate()},
       expires_at: DateTime.utc_now() |> DateTime.add(1, :hour),
-      context: %Auth.Context{
+      context: %Authentication.Context{
         type: :portal,
         remote_ip: {127, 0, 0, 1},
         user_agent: "provision/1"

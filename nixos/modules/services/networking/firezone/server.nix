@@ -193,12 +193,12 @@ let
         ${getExe cfg.package} rpc "
           account = Portal.Repo.get_by!(Portal.Account, slug: \"$ACCOUNT\")
           site = Portal.Repo.get_by!(Portal.Site, account_id: account.id, name: \"$SITE\")
-          subject = %Portal.Auth.Subject{
+          subject = %Portal.Authentication.Subject{
             account: account,
             actor: %Portal.Actor{id: Ecto.UUID.generate(), type: :account_admin_user},
-            credential: %Portal.Auth.Credential{type: :portal_session, id: Ecto.UUID.generate()},
+            credential: %Portal.Authentication.Credential{type: :portal_session, id: Ecto.UUID.generate()},
             expires_at: DateTime.utc_now() |> DateTime.add(1, :hour),
-            context: %Portal.Auth.Context{type: :portal, remote_ip: {127,0,0,1}, user_agent: \"firezone-generate-token\"}
+            context: %Portal.Authentication.Context{type: :portal, remote_ip: {127,0,0,1}, user_agent: \"firezone-generate-token\"}
           }
           {:ok, token} = Portal.Authentication.create_gateway_token(site, subject)
           IO.puts(Portal.Authentication.encode_fragment!(token))
@@ -211,14 +211,14 @@ let
         ${getExe cfg.package} rpc "
           account = Portal.Repo.get_by!(Portal.Account, slug: \"$ACCOUNT\")
           actor = Portal.Repo.get_by!(Portal.Actor, account_id: account.id, name: \"$ACTOR\")
-          subject = %Portal.Auth.Subject{
+          subject = %Portal.Authentication.Subject{
             account: account,
             actor: %Portal.Actor{id: Ecto.UUID.generate(), type: :account_admin_user},
-            credential: %Portal.Auth.Credential{type: :portal_session, id: Ecto.UUID.generate()},
+            credential: %Portal.Authentication.Credential{type: :portal_session, id: Ecto.UUID.generate()},
             expires_at: DateTime.utc_now() |> DateTime.add(1, :hour),
-            context: %Portal.Auth.Context{type: :portal, remote_ip: {127,0,0,1}, user_agent: \"firezone-generate-token\"}
+            context: %Portal.Authentication.Context{type: :portal, remote_ip: {127,0,0,1}, user_agent: \"firezone-generate-token\"}
           }
-          {:ok, token} = Portal.Authentication.create_client_token(actor, subject)
+          {:ok, token} = Portal.Authentication.create_headless_client_token(actor, %{expires_at: DateTime.utc_now() |> DateTime.add(365, :day)}, subject)
           IO.puts(Portal.Authentication.encode_fragment!(token))
         "
         ;;
@@ -456,6 +456,62 @@ in
               cluster over multiple hosts.
             '';
           };
+
+          OPS_COOKIE_SIGNING_SALT = mkOption {
+            type = types.nullOr types.path;
+            default = null;
+            description = ''
+              A file containing a unique base64 encoded secret for the
+              `OPS_COOKIE_SIGNING_SALT`. The Firezone portal in your cluster must
+              use the same value across all instances.
+
+              If this is `null`, a value will automatically be generated on
+              startup. You do not need to set this except when you spread your
+              cluster over multiple hosts.
+            '';
+          };
+
+          OPS_SECRET_KEY_BASE = mkOption {
+            type = types.nullOr types.path;
+            default = null;
+            description = ''
+              A file containing a unique base64 encoded secret for the
+              `OPS_SECRET_KEY_BASE`. The Firezone portal in your cluster must
+              use the same value across all instances.
+
+              If this is `null`, a value will automatically be generated on
+              startup. You do not need to set this except when you spread your
+              cluster over multiple hosts.
+            '';
+          };
+
+          OPS_LIVE_VIEW_SIGNING_SALT = mkOption {
+            type = types.nullOr types.path;
+            default = null;
+            description = ''
+              A file containing a unique base64 encoded secret for the
+              `OPS_LIVE_VIEW_SIGNING_SALT`. The Firezone portal in your cluster must
+              use the same value across all instances.
+
+              If this is `null`, a value will automatically be generated on
+              startup. You do not need to set this except when you spread your
+              cluster over multiple hosts.
+            '';
+          };
+
+          OPS_ADMIN_PASSWORD = mkOption {
+            type = types.nullOr types.path;
+            default = null;
+            description = ''
+              A file containing the password for HTTP basic authentication on the
+              ops endpoint. The Firezone portal in your cluster must use the same
+              value across all instances.
+
+              If this is `null`, a value will automatically be generated on
+              startup. You do not need to set this except when you spread your
+              cluster over multiple hosts.
+            '';
+          };
         };
       };
     };
@@ -600,11 +656,11 @@ in
                 in
                 {
                   policy_conditions = mkFeatureOption "policy_conditions" true;
-                  multi_site_resources = mkFeatureOption "multi_site_resources" true;
                   traffic_filters = mkFeatureOption "traffic_filters" true;
                   idp_sync = mkFeatureOption "idp_sync" true;
                   rest_api = mkFeatureOption "rest_api" true;
                   internet_resource = mkFeatureOption "internet_resource" true;
+                  client_to_client = mkFeatureOption "client_to_client" true;
                 };
 
               actors = mkOption {
@@ -1074,12 +1130,19 @@ in
           }
         ];
         ensureDatabases = [ "firezone" ];
+        # Allow the firezone user to connect via TCP (needed for replica connections)
+        authentication = ''
+          host firezone firezone 127.0.0.1/32 trust
+          host firezone firezone ::1/128 trust
+        '';
         # Firezone uses an internal replication strategy
         # that depends on a logical wal
         settings.wal_level = "logical";
       };
 
       services.firezone.server.settings = {
+        DATABASE_HOST = "localhost";
+        DATABASE_HOST_REPLICA = "localhost";
         DATABASE_SOCKET_DIR = "/run/postgresql";
         DATABASE_PORT = "5432";
         DATABASE_NAME = "firezone";
@@ -1147,6 +1210,8 @@ in
         FEATURE_REST_API_ENABLED = mkDefault true;
         FEATURE_INTERNET_RESOURCE_ENABLED = mkDefault true;
         FEATURE_SIGN_UP_ENABLED = mkDefault (!cfg.provision.enable);
+
+        OPS_ADMIN_USERNAME = mkDefault "admin";
 
         WEB_EXTERNAL_URL = mkDefault cfg.portal.externalUrl;
         # API endpoint (for relay/gateway/client WebSockets) uses /api/ path on same domain
@@ -1220,7 +1285,7 @@ in
               echo "Tried for at least 30 seconds, giving up..."
               exit 1
             fi
-            count=$((count++))
+            count=$((count + 1))
           done
         ''
         + optionalString cfg.provision.enable ''

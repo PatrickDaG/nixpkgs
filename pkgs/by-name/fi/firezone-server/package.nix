@@ -8,19 +8,19 @@
   fetchPnpmDeps,
   pnpmConfigHook,
   nodejs,
-  tailwindcss_3,
+  tailwindcss_4,
   esbuild,
 }:
 beam27Packages.mixRelease rec {
   pname = "firezone-server";
-  version = "0-unstable-2025-12-31";
+  version = "0-unstable-2026-03-13";
 
   src = "${
     fetchFromGitHub {
       owner = "firezone";
       repo = "firezone";
-      rev = "96ca73bf827339cdae2258cf64230fd0407f29f6";
-      hash = "sha256-ip648m9aC5xXJmz29nuCePSTnTMJeZGhybaV1ykTRpo=";
+      rev = "2d57f154cc1434005d3f9ac60fef9f53b10af5fa";
+      hash = "sha256-YPhdDSY4xaNZYflSa6NtW6Hhox4IaqzZHIR+pKX+JBU=";
 
       # This is necessary to allow sending mails via SMTP, as the default
       # SMTP adapter is current broken: https://github.com/swoosh/swoosh/issues/785
@@ -41,7 +41,7 @@ beam27Packages.mixRelease rec {
 
   preBuild = ''
     cat >> config/config.exs <<EOF
-    config :tailwind, path: "${lib.getExe tailwindcss_3}"
+    config :tailwind, path: "${lib.getExe tailwindcss_4}"
     config :esbuild, path: "${lib.getExe esbuild}"
     config :portal, run_manual_migrations: true
     EOF
@@ -71,7 +71,7 @@ beam27Packages.mixRelease rec {
   mixFodDeps = beam27Packages.fetchMixDeps {
     pname = "mix-deps-${pname}-${version}";
     inherit src version;
-    hash = "sha256-MlY8TO+tqaq8kpOYfxpwvLAvdrUJqnmKiZ6+MOzcGB0=";
+    hash = "sha256-QDgd40h5CrTtRM2D3GuMLZvkPZm4H3NMWN9AhUUwboU=";
   };
 
   passthru.tests = {
