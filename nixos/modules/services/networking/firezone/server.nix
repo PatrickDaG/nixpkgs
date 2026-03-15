@@ -151,83 +151,41 @@ let
     RestartSec = 10;
   };
 
-  # Token generation script for relays, gateways, and clients
-  tokenGenerationScript = pkgs.writeShellScriptBin "firezone-generate-token" ''
-    set -euo pipefail
+  # Token generation script for relay tokens
+  tokenGenerationScript = pkgs.writeShellApplication {
+    name = "firezone-generate-token";
+    runtimeInputs = [ cfg.package ];
+    text = ''
+      # Load RELEASE_COOKIE from the auto-generated secret if not already set
+      # (e.g. when run outside of the firezone-server systemd service)
+      if [[ -z "''${RELEASE_COOKIE:-}" ]]; then
+        cookie_file="/var/lib/firezone/secrets/RELEASE_COOKIE"
+        if [[ -r "$cookie_file" ]]; then
+          RELEASE_COOKIE=$(< "$cookie_file")
+          export RELEASE_COOKIE
+        else
+          echo "Error: RELEASE_COOKIE is not set and $cookie_file is not readable." >&2
+          echo "Run this script as root or as the firezone user." >&2
+          exit 1
+        fi
+      fi
 
-    usage() {
-      echo "Usage: firezone-generate-token <type> [options]"
-      echo ""
-      echo "Generate authentication tokens for Firezone components."
-      echo ""
-      echo "Types:"
-      echo "  relay                    Generate a relay token (global, not account-specific)"
-      echo "  gateway <account> <site> Generate a gateway token for the given account and site"
-      echo "  client <account> <actor> Generate a client token for the given account and actor"
-      echo ""
-      echo "Examples:"
-      echo "  firezone-generate-token relay"
-      echo "  firezone-generate-token gateway main my-site"
-      echo "  firezone-generate-token client main my-service-account"
-      echo ""
-      echo "Note: This script must be run on the Firezone server host."
-      exit 1
-    }
+      if [[ "''${1:-}" != "relay" ]]; then
+        echo "Usage: firezone-generate-token relay"
+        echo ""
+        echo "Generate a relay authentication token for Firezone."
+        echo "Gateway and client tokens can be generated via the web interface."
+        echo ""
+        echo "Note: This script must be run on the Firezone server host."
+        exit 1
+      fi
 
-    [[ $# -lt 1 ]] && usage
-
-    TYPE="$1"
-    shift
-
-    case "$TYPE" in
-      relay)
-        ${getExe cfg.package} rpc '
-          {:ok, token} = Portal.Authentication.create_relay_token()
-          IO.puts(Portal.Authentication.encode_fragment!(token))
-        '
-        ;;
-      gateway)
-        [[ $# -lt 2 ]] && { echo "Error: gateway requires <account> and <site> arguments"; usage; }
-        ACCOUNT="$1"
-        SITE="$2"
-        ${getExe cfg.package} rpc "
-          account = Portal.Repo.get_by!(Portal.Account, slug: \"$ACCOUNT\")
-          site = Portal.Repo.get_by!(Portal.Site, account_id: account.id, name: \"$SITE\")
-          subject = %Portal.Authentication.Subject{
-            account: account,
-            actor: %Portal.Actor{id: Ecto.UUID.generate(), type: :account_admin_user},
-            credential: %Portal.Authentication.Credential{type: :portal_session, id: Ecto.UUID.generate()},
-            expires_at: DateTime.utc_now() |> DateTime.add(1, :hour),
-            context: %Portal.Authentication.Context{type: :portal, remote_ip: {127,0,0,1}, user_agent: \"firezone-generate-token\"}
-          }
-          {:ok, token} = Portal.Authentication.create_gateway_token(site, subject)
-          IO.puts(Portal.Authentication.encode_fragment!(token))
-        "
-        ;;
-      client)
-        [[ $# -lt 2 ]] && { echo "Error: client requires <account> and <actor> arguments"; usage; }
-        ACCOUNT="$1"
-        ACTOR="$2"
-        ${getExe cfg.package} rpc "
-          account = Portal.Repo.get_by!(Portal.Account, slug: \"$ACCOUNT\")
-          actor = Portal.Repo.get_by!(Portal.Actor, account_id: account.id, name: \"$ACTOR\")
-          subject = %Portal.Authentication.Subject{
-            account: account,
-            actor: %Portal.Actor{id: Ecto.UUID.generate(), type: :account_admin_user},
-            credential: %Portal.Authentication.Credential{type: :portal_session, id: Ecto.UUID.generate()},
-            expires_at: DateTime.utc_now() |> DateTime.add(1, :hour),
-            context: %Portal.Authentication.Context{type: :portal, remote_ip: {127,0,0,1}, user_agent: \"firezone-generate-token\"}
-          }
-          {:ok, token} = Portal.Authentication.create_headless_client_token(actor, %{expires_at: DateTime.utc_now() |> DateTime.add(365, :day)}, subject)
-          IO.puts(Portal.Authentication.encode_fragment!(token))
-        "
-        ;;
-      *)
-        echo "Error: Unknown token type '$TYPE'"
-        usage
-        ;;
-    esac
-  '';
+      portal rpc '
+        {:ok, token} = Portal.Authentication.create_relay_token()
+        IO.puts(Portal.Authentication.encode_fragment!(token))
+      '
+    '';
+  };
 
 in
 {
@@ -746,11 +704,19 @@ in
                         };
 
                         client_secret = mkOption {
-                          type = types.either types.str types.path;
+                          type = types.either types.str (types.submodule {
+                            options._secret = mkOption {
+                              type = types.path;
+                              description = "Path to a file containing the OIDC client secret.";
+                            };
+                          });
                           description = ''
-                            The OIDC client secret. Can be a literal string or a path
-                            to a file using the `{file:/path/to/secret}` syntax for
-                            runtime secret loading.
+                            The OIDC client secret. Can be a literal string or an attribute
+                            set with `_secret` pointing to a file containing the secret,
+                            e.g. `{ _secret = "/run/secrets/oidc-secret"; }`.
+
+                            When using `_secret`, the secret will be loaded at runtime
+                            from the specified file path.
                           '';
                         };
 
@@ -803,7 +769,7 @@ in
                       name = "My OIDC Provider";
                       issuer = "https://auth.example.com";
                       client_id = "my-client-id";
-                      client_secret = "{file:/run/secrets/oidc-secret}";
+                      client_secret = { _secret = "/run/secrets/oidc-secret"; };
                       discovery_document_uri = "https://auth.example.com/.well-known/openid-configuration";
                     };
                   };
@@ -1130,11 +1096,6 @@ in
           }
         ];
         ensureDatabases = [ "firezone" ];
-        # Allow the firezone user to connect via TCP (needed for replica connections)
-        authentication = ''
-          host firezone firezone 127.0.0.1/32 trust
-          host firezone firezone ::1/128 trust
-        '';
         # Firezone uses an internal replication strategy
         # that depends on a logical wal
         settings.wal_level = "logical";
@@ -1142,7 +1103,6 @@ in
 
       services.firezone.server.settings = {
         DATABASE_HOST = "localhost";
-        DATABASE_HOST_REPLICA = "localhost";
         DATABASE_SOCKET_DIR = "/run/postgresql";
         DATABASE_PORT = "5432";
         DATABASE_NAME = "firezone";
@@ -1226,6 +1186,10 @@ in
         PHOENIX_HTTP_WEB_PORT = mkDefault cfg.portal.port;
         PHOENIX_HTTP_API_PORT = mkDefault cfg.portal.apiPort;
         PHOENIX_SECURE_COOKIES = mkDefault true; # enforce HTTPS on cookies
+
+        # The upstream default is 1, which is too low for dual-stack (IPv4+IPv6)
+        # connections and causes 503 rate limiting. 10 is a safe default.
+        API_SOCKET_CAPACITY = mkDefault 10;
       };
     }
     (mkIf (cfg.enable && !cfg.smtp.configureManually) {

@@ -25,7 +25,7 @@ beam27Packages.mixRelease rec {
       # This is necessary to allow sending mails via SMTP, as the default
       # SMTP adapter is current broken: https://github.com/swoosh/swoosh/issues/785
       postFetch = ''
-        ${lib.getExe gitMinimal} -C $out apply ${./0000-add-mua.patch} ${./0001-remove-hardcoded-domain-config.patch}
+        ${lib.getExe gitMinimal} -C $out apply ${./0000-add-mua.patch} ${./0001-remove-hardcoded-domain-config.patch} ${./0002-replica-unix-socket.patch}
       '';
     }
   }/elixir";

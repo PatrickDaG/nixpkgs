@@ -1,0 +1,23 @@
+--- a/elixir/config/runtime.exs
++++ b/elixir/config/runtime.exs
+@@ -42,8 +42,7 @@
+            {:queue_target, env_var_to_config!(:database_queue_target)},
+            {:queue_interval, env_var_to_config!(:database_queue_interval)},
+            {:ssl, env_var_to_config!(:database_ssl)},
+-           {:parameters, env_var_to_config!(:database_parameters)},
+-           {:hostname, env_var_to_config!(:database_host_replica)}
++           {:parameters, env_var_to_config!(:database_parameters)}
+          ] ++
+            if(env_var_to_config!(:database_socket_options) != [],
+              do: [{:socket_options, env_var_to_config!(:database_socket_options)}],
+@@ -52,6 +51,10 @@
+            if(env_var_to_config(:database_password),
+              do: [{:password, env_var_to_config!(:database_password)}],
+              else: []
++           ) ++
++           if(env_var_to_config(:database_socket_dir),
++             do: [{:socket_dir, env_var_to_config!(:database_socket_dir)}],
++             else: [{:hostname, env_var_to_config!(:database_host_replica)}]
+            )
+
+   config :portal, Portal.ChangeLogs.ReplicationConnection,

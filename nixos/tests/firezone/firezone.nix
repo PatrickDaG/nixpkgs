@@ -155,10 +155,6 @@ in
           };
 
           portal.externalUrl = "https://${domain}/";
-
-          # Increase socket rate limit capacity to allow dual-stack (IPv4+IPv6)
-          # connection attempts without triggering 503 rate limiting
-          settings.API_SOCKET_CAPACITY = 10;
         };
 
         specialisation.changeAttributes.configuration = {
@@ -280,23 +276,18 @@ in
           };
         };
 
-        # Generate tokens using the firezone-generate-token script after server starts.
-        # Only generate if not already present, so specialisation switches don't fail
-        # when actor/site names change (tokens remain valid across renames).
+        # Generate tokens using firezone-generate-token (relay) and create-tokens.exs
+        # (gateway/client) after server starts. Only generate if not already present,
+        # so specialisation switches don't fail when actor/site names change.
         systemd.services.firezone-server.postStart = lib.mkAfter ''
           if [[ ! -f relay_token.txt ]]; then
             echo "Generating relay token..."
             firezone-generate-token relay > relay_token.txt
           fi
 
-          if [[ ! -f gateway_token.txt ]]; then
-            echo "Generating gateway token..."
-            firezone-generate-token gateway main Site > gateway_token.txt
-          fi
-
-          if [[ ! -f client_token.txt ]]; then
-            echo "Generating client token..."
-            firezone-generate-token client main "A client" > client_token.txt
+          if [[ ! -f gateway_token.txt ]] || [[ ! -f client_token.txt ]]; then
+            echo "Generating gateway and client tokens..."
+            ${lib.getExe config.services.firezone.server.package} rpc 'Code.eval_file("${./create-tokens.exs}")'
           fi
 
           echo "Token generation complete"
