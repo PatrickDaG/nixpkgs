@@ -20,7 +20,7 @@ beam27Packages.mixRelease rec {
       owner = "firezone";
       repo = "firezone";
       rev = "2d57f154cc1434005d3f9ac60fef9f53b10af5fa";
-      hash = "sha256-YPhdDSY4xaNZYflSa6NtW6Hhox4IaqzZHIR+pKX+JBU=";
+      hash = "sha256-8gRlMJrqF4kL7HrV9Bv5D1517TRTT2rNdhPLaxNZjwo=";
 
       # This is necessary to allow sending mails via SMTP, as the default
       # SMTP adapter is current broken: https://github.com/swoosh/swoosh/issues/785

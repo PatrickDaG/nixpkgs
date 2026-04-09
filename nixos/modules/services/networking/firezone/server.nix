@@ -641,7 +641,15 @@ in
                       };
 
                       email = mkOption {
-                        type = types.nullOr types.str;
+                        type = types.nullOr (
+                          types.either types.str (
+                            types.submodule {
+                              options._secret = mkOption {
+                                type = types.path;
+                              };
+                            }
+                          )
+                        );
                         default = null;
                         description = ''
                           The email address used to authenticate as this account.
@@ -651,7 +659,15 @@ in
                       };
 
                       passwordHash = mkOption {
-                        type = types.nullOr types.str;
+                        type = types.nullOr (
+                          types.either types.str (
+                            types.submodule {
+                              options._secret = mkOption {
+                                type = types.path;
+                              };
+                            }
+                          )
+                        );
                         default = null;
                         description = ''
                           An Argon2 password hash for this actor. This enables the actor to
@@ -704,12 +720,14 @@ in
                         };
 
                         client_secret = mkOption {
-                          type = types.either types.str (types.submodule {
-                            options._secret = mkOption {
-                              type = types.path;
-                              description = "Path to a file containing the OIDC client secret.";
-                            };
-                          });
+                          type = types.either types.str (
+                            types.submodule {
+                              options._secret = mkOption {
+                                type = types.path;
+                                description = "Path to a file containing the OIDC client secret.";
+                              };
+                            }
+                          );
                           description = ''
                             The OIDC client secret. Can be a literal string or an attribute
                             set with `_secret` pointing to a file containing the secret,
@@ -769,7 +787,9 @@ in
                       name = "My OIDC Provider";
                       issuer = "https://auth.example.com";
                       client_id = "my-client-id";
-                      client_secret = { _secret = "/run/secrets/oidc-secret"; };
+                      client_secret = {
+                        _secret = "/run/secrets/oidc-secret";
+                      };
                       discovery_document_uri = "https://auth.example.com/.well-known/openid-configuration";
                     };
                   };
@@ -1055,18 +1075,20 @@ in
             }
           )
           # Policy resource/group validation
-          ++ flatten (flip mapAttrsToList accountCfg.policies (
-            policyName: policyCfg: [
-              {
-                assertion = elem policyCfg.resource validResources;
-                message = "Policy '${policyName}' in account '${accountName}' references non-existent resource '${policyCfg.resource}'. Valid resources: ${builtins.concatStringsSep ", " validResources}";
-              }
-              {
-                assertion = elem policyCfg.group validGroups;
-                message = "Policy '${policyName}' in account '${accountName}' references non-existent group '${policyCfg.group}'. Valid groups: ${builtins.concatStringsSep ", " validGroups}";
-              }
-            ]
-          ))
+          ++ flatten (
+            flip mapAttrsToList accountCfg.policies (
+              policyName: policyCfg: [
+                {
+                  assertion = elem policyCfg.resource validResources;
+                  message = "Policy '${policyName}' in account '${accountName}' references non-existent resource '${policyCfg.resource}'. Valid resources: ${builtins.concatStringsSep ", " validResources}";
+                }
+                {
+                  assertion = elem policyCfg.group validGroups;
+                  message = "Policy '${policyName}' in account '${accountName}' references non-existent group '${policyCfg.group}'. Valid groups: ${builtins.concatStringsSep ", " validGroups}";
+                }
+              ]
+            )
+          )
           # Resource gatewayGroups validation
           ++ flip mapAttrsToList accountCfg.resources (
             resourceName: resourceCfg: {
